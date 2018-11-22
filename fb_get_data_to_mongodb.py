@@ -48,10 +48,25 @@ def insert_posts_into_DB(mydb, posts):
 
     """
     for post in posts:
-        # downloaded += 1
         post['_id'] = post.pop('id')
         if mydb['posts'].find({'_id': post['_id']}).count() == 0:
             mydb['posts'].insert_one(post)
+
+
+def insert_comments_into_DB(mydb, post_id, comments):
+    """Insert comments of posts into MongoClient
+
+    :mydb: TODO
+    :post_id: TODO
+    :comments: TODO
+    :returns: TODO
+
+    """
+    for comment in comments:
+        comment['_id'] = comment.pop('id')
+        comment['post_id'] = post_id
+        if mydb['comments'].find({'_id': comment['_id']}).count() == 0:
+            mydb['comments'].insert_one(comment)
 
 
 if __name__ == "__main__":
@@ -67,7 +82,13 @@ if __name__ == "__main__":
     #   Get access token
     access_token = os.environ.get('ACCESS_TOKEN')
     #   Create graph API from fb
-    graph = facebook.GraphAPI(access_token=access_token, version="2.7")
+    graph = facebook.GraphAPI(access_token=access_token, version="3.0")
+
+    print graph.get_connections(
+        id="7724542745_10156152198732746",
+        connection_name="comments",
+        fields="id",
+        limit=100)['paging']
     page_name = args.page
     #   Get page_id
     page_id = get_page_id(graph, page_name)
@@ -117,12 +138,21 @@ if __name__ == "__main__":
             'source',
             'updated_time',
         ]
+        comments_fields = [
+            'id',
+            'created_time',
+            'message',
+            'like_count',
+            'comment_count',
+        ]
         fields = ','.join(fields)
+        comments_fields = ','.join(comments_fields)
         # posts = graph.get_object(id=page_id + "/posts", fields=fields)
         posts = graph.get_connections(
             id=page_id, connection_name="posts", fields=fields, limit=100)
         downloaded = 0
         n = args.n
+        print posts['data'][0]
 
         #   loop posts of the page and insert into DB
         LOGGER.info("Start insert posts from into DB")
@@ -131,12 +161,28 @@ if __name__ == "__main__":
         while n > downloaded:
             try:
                 insert_posts_into_DB(mydb, posts['data'])
-                # thread.start_new_thread(insert_posts_into_DB,
-                #                         (mydb, posts['data']))
                 downloaded += len(posts['data'])
+                for post in posts['data']:
+                    count = 0
+                    post_id = post['_id']
+                    comments = graph.get_connections(
+                        id=post_id,
+                        connection_name='comments',
+                        fields=comments_fields,
+                        limit=100)
+                    while 1:
+                        try:
+                            insert_comments_into_DB(mydb, post_id,
+                                                    comments['data'])
+                            count += len(comments['data'])
+                            comments = requests.get(
+                                comments['paging']['next']).json()
+                        except Exception as e:
+                            break
+                    LOGGER.info("Insert %s comments into DB" % (count))
                 posts = requests.get(posts['paging']['next']).json()
             except Exception as e:
-                # raise e
+                print e
                 break
         LOGGER.info("Insert %s post into DB in %s seconds" %
                     (downloaded, (datetime.now() - start).seconds))
