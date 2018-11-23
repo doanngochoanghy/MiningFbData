@@ -1,6 +1,8 @@
 import logging
 from argparse import ArgumentParser
 # import thread
+from threading import Thread
+import Queue
 import pymongo
 import facebook
 import os
@@ -18,12 +20,29 @@ ch.setLevel(logging.DEBUG)
 ch.setFormatter(formatter)
 LOGGER.addHandler(ch)
 
+#   Get access token
+access_token = os.environ.get('ACCESS_TOKEN')
+#   Create graph API from fb
+graph = facebook.GraphAPI(access_token=access_token, version="3.0")
+
+#   Connect to mongodb
+client = pymongo.MongoClient("localhost", 27017)
+LOGGER.info('Create connect to MongoDB')
+
 
 def get_parser():
     parser = ArgumentParser()
     parser.add_argument("--page")
-    parser.add_argument("--n", type=int, default=10)
+    parser.add_argument("--n", type=int, default=100)
     return parser
+
+
+parser = get_parser()
+args = parser.parse_args()
+LOGGER.info('Get data from page: %s' % (args.page))
+
+page_name = args.page
+mydb = client[page_name]
 
 
 def get_page_id(graph, name_page):
@@ -39,7 +58,7 @@ def get_page_id(graph, name_page):
         return ""
 
 
-def insert_posts_into_DB(mydb, posts):
+def insert_posts_into_DB(posts):
     """Insert posts in to MongoClient
 
     :client: TODO
@@ -53,7 +72,32 @@ def insert_posts_into_DB(mydb, posts):
             mydb['posts'].insert_one(post)
 
 
-def insert_comments_into_DB(mydb, post_id, comments):
+def get_comments_and_insert_DB(post_id):
+    """TODO: Docstring for get_comments_and_insert_DB.
+
+    :graph: TODO
+    :post_id: TODO
+    :mydb: TODO
+    :returns: TODO
+
+    """
+    comments = graph.get_connections(
+        id=post_id,
+        connection_name='comments',
+        fields=comments_fields,
+        limit=100)
+    count = 0
+    while True:
+        try:
+            insert_comments_into_DB(post_id, comments['data'])
+            count += len(comments['data'])
+            comments = requests.get(comments['paging']['next']).json()
+        except Exception:
+            break
+    LOGGER.info("Insert %s comments into DB" % (count))
+
+
+def insert_comments_into_DB(post_id, comments):
     """Insert comments of posts into MongoClient
 
     :mydb: TODO
@@ -69,27 +113,32 @@ def insert_comments_into_DB(mydb, post_id, comments):
             mydb['comments'].insert_one(comment)
 
 
+class CommentsInserter(Thread):
+    """Thread to insert comments into DB """
+
+    def __init__(self, queue):
+        """
+
+        :queue: TODO
+
+        """
+        Thread.__init__(self)
+
+        self._queue = queue
+
+    def run(self):
+        while True:
+            post_id = self._queue.get()
+            try:
+                get_comments_and_insert_DB(post_id)
+            except Exception as e:
+                raise e
+            finally:
+                self._queue.task_done()
+
+
 if __name__ == "__main__":
     #   Get input page name
-    parser = get_parser()
-    args = parser.parse_args()
-    LOGGER.info('Get data from page: %s' % (args.page))
-
-    #   Connect to mongodb
-    client = pymongo.MongoClient("localhost", 27017)
-    LOGGER.info('Create connect to MongoDB')
-
-    #   Get access token
-    access_token = os.environ.get('ACCESS_TOKEN')
-    #   Create graph API from fb
-    graph = facebook.GraphAPI(access_token=access_token, version="3.0")
-
-    print graph.get_connections(
-        id="7724542745_10156152198732746",
-        connection_name="comments",
-        fields="id",
-        limit=100)['paging']
-    page_name = args.page
     #   Get page_id
     page_id = get_page_id(graph, page_name)
     #   Check page exists
@@ -116,7 +165,6 @@ if __name__ == "__main__":
         fields = ','.join(fields)
         infomation = graph.get_object(id=page_id, fields=fields)
         infomation['_id'] = infomation.pop('id')
-        mydb = client[page_name]
         mycol = mydb['page']
         if mycol.find({"_id": page_id}).count() == 0:
             mycol.insert_one(infomation)
@@ -152,37 +200,29 @@ if __name__ == "__main__":
             id=page_id, connection_name="posts", fields=fields, limit=100)
         downloaded = 0
         n = args.n
-        print posts['data'][0]
 
         #   loop posts of the page and insert into DB
         LOGGER.info("Start insert posts from into DB")
         start = datetime.now()
         LOGGER.debug("Inserting...")
+
+        queue = Queue.Queue()
+        for x in range(20):
+            th = CommentsInserter(queue)
+            th.daemon = True
+            th.start()
         while n > downloaded:
             try:
-                insert_posts_into_DB(mydb, posts['data'])
+                insert_posts_into_DB(posts['data'])
                 downloaded += len(posts['data'])
                 for post in posts['data']:
                     count = 0
                     post_id = post['_id']
-                    comments = graph.get_connections(
-                        id=post_id,
-                        connection_name='comments',
-                        fields=comments_fields,
-                        limit=100)
-                    while 1:
-                        try:
-                            insert_comments_into_DB(mydb, post_id,
-                                                    comments['data'])
-                            count += len(comments['data'])
-                            comments = requests.get(
-                                comments['paging']['next']).json()
-                        except Exception as e:
-                            break
-                    LOGGER.info("Insert %s comments into DB" % (count))
+                    queue.put(post_id)
                 posts = requests.get(posts['paging']['next']).json()
             except Exception as e:
                 print e
                 break
+        queue.join()
         LOGGER.info("Insert %s post into DB in %s seconds" %
                     (downloaded, (datetime.now() - start).seconds))
