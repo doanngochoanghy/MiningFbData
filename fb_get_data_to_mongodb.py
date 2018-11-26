@@ -72,7 +72,7 @@ def insert_posts_into_DB(posts):
             mydb['posts'].insert_one(post)
 
 
-def get_comments_and_insert_DB(post_id):
+def insert_post_and_comments(post):
     """TODO: Docstring for get_comments_and_insert_DB.
 
     :graph: TODO
@@ -81,6 +81,10 @@ def get_comments_and_insert_DB(post_id):
     :returns: TODO
 
     """
+    post['_id'] = post.pop('id')
+    post_id = post['_id']
+    if mydb['posts'].find({'_id': post_id}).count() == 0:
+        mydb['posts'].insert_one(post)
     comments = graph.get_connections(
         id=post_id,
         connection_name='comments',
@@ -128,9 +132,9 @@ class CommentsInserter(Thread):
 
     def run(self):
         while True:
-            post_id = self._queue.get()
+            post = self._queue.get()
             try:
-                get_comments_and_insert_DB(post_id)
+                insert_post_and_comments(post)
             except Exception as e:
                 raise e
             finally:
@@ -207,18 +211,16 @@ if __name__ == "__main__":
         LOGGER.debug("Inserting...")
 
         queue = Queue.Queue()
-        for x in range(20):
+        for x in range(8):
             th = CommentsInserter(queue)
             th.daemon = True
             th.start()
         while n > downloaded:
             try:
-                insert_posts_into_DB(posts['data'])
+                # insert_posts_into_DB(posts['data'])
                 downloaded += len(posts['data'])
                 for post in posts['data']:
-                    count = 0
-                    post_id = post['_id']
-                    queue.put(post_id)
+                    queue.put(post)
                 posts = requests.get(posts['paging']['next']).json()
             except Exception as e:
                 print e
