@@ -1,5 +1,10 @@
 import logging
 from argparse import ArgumentParser
+import sys
+from os import path
+from wordcloud import WordCloud, STOPWORDS
+# from PIL import Image
+# import matplotlib
 
 import pymongo
 # import os
@@ -15,6 +20,7 @@ ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 ch.setFormatter(formatter)
 LOGGER.addHandler(ch)
+currdir = path.dirname(__file__)
 
 
 def get_parser():
@@ -22,6 +28,24 @@ def get_parser():
     parser.add_argument("--page")
     parser.add_argument("--n", type=int, default=10)
     return parser
+
+
+def create_wordcloud(text):
+    # create set of stopwords
+    stopwords = set(STOPWORDS)
+    stopwords.add("bit")
+    stopwords.add("ly")
+    stopwords.add("day")
+
+    # create wordcloud object
+    wc = WordCloud(
+        background_color="white", max_words=200, stopwords=stopwords)
+
+    # generate wordcloud
+    wc.generate(text)
+
+    # save wordcloud
+    wc.to_file(path.join(currdir, "wc.png"))
 
 
 if __name__ == "__main__":
@@ -35,3 +59,20 @@ if __name__ == "__main__":
     LOGGER.info('Create connect to MongoDB')
 
     page_name = args.page
+    mydb = client[page_name]
+
+    # get query
+    query = sys.argv[1]
+    document = []
+
+    # get text for given query
+    cursor = mydb["posts"].find({})
+    for post in cursor:
+        try:
+            document.append(post['message'])
+        except Exception as e:
+            pass
+    document = " ".join(document)
+    # generate wordcloud
+    LOGGER.info("Creating wordcloud for page: %s" % (page_name))
+    create_wordcloud(document)

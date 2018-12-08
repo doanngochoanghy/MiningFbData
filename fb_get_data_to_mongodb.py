@@ -8,6 +8,7 @@ import facebook
 import os
 import requests
 from datetime import datetime
+# import time
 
 LOGGER = logging.getLogger(__name__)
 s = 2
@@ -99,6 +100,7 @@ def insert_post_and_comments(post):
         except Exception:
             break
     LOGGER.info("Insert %s comments into DB" % (count))
+    # time.sleep(1.5)
 
 
 def insert_comments_into_DB(post_id, comments):
@@ -136,7 +138,7 @@ class CommentsInserter(Thread):
             try:
                 insert_post_and_comments(post)
             except Exception as e:
-                raise e
+                LOGGER.info("Got error: %s" % (e))
             finally:
                 self._queue.task_done()
 
@@ -189,6 +191,7 @@ if __name__ == "__main__":
             'shares',
             'source',
             'updated_time',
+            'like_count',
         ]
         comments_fields = [
             'id',
@@ -211,7 +214,7 @@ if __name__ == "__main__":
         LOGGER.debug("Inserting...")
 
         queue = Queue.Queue()
-        for x in range(8):
+        for x in range(2):
             th = CommentsInserter(queue)
             th.daemon = True
             th.start()
@@ -220,11 +223,21 @@ if __name__ == "__main__":
                 # insert_posts_into_DB(posts['data'])
                 downloaded += len(posts['data'])
                 for post in posts['data']:
-                    queue.put(post)
+                    try:
+                        if mydb['posts'].find({
+                                '_id': post['id']
+                        }).count() == 0:
+                            insert_post_and_comments(post)
+                            # queue.put(post)
+                    except Exception as e:
+                        LOGGER.info("Error %s" % (e))
+                        continue
+                LOGGER.info(("Scan %d requests") % (downloaded))
                 posts = requests.get(posts['paging']['next']).json()
             except Exception as e:
-                print e
+                LOGGER.info("post: %s" % (posts))
+                LOGGER.info("Error %s" % (e))
                 break
-        queue.join()
+        # queue.join()
         LOGGER.info("Insert %s post into DB in %s seconds" %
                     (downloaded, (datetime.now() - start).seconds))
